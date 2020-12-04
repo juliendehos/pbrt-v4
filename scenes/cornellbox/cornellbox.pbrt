@@ -1,5 +1,5 @@
 Integrator "path"
-    "integer maxdepth" [ 32 ]
+    "integer maxdepth" [ 4 ]
 Transform [ 1 -0 -0 -0 -0 1 -0 -0 -0 -0 -1 -0 -0 -1 6.8 1  ]
 Sampler "paddedsobol"
     "integer pixelsamples" [ 64 ]
