@@ -189,9 +189,10 @@ static __forceinline__ __device__ void ProcessClosestIntersection(
     MaterialHandle material = intr.material;
 
     const MixMaterial *mix = material.CastOrNullptr<MixMaterial>();
-    if (mix) {
-        MaterialEvalContext ctx(intr);
-        material = mix->ChooseMaterial(BasicTextureEvaluator(), ctx);
+    while (mix) {
+         MaterialEvalContext ctx(intr);
+         material = mix->ChooseMaterial(BasicTextureEvaluator(), ctx);
+         mix = material.CastOrNullptr<MixMaterial>();
     }
 
     if (!material) {
@@ -435,7 +436,7 @@ extern "C" __global__ void __raygen__shadow_Tr() {
             Float tEnd =
                 missed ? tMax : (Distance(ray.o, Point3f(ctx.piHit)) / Length(ray.d));
             SampledSpectrum Tmaj =
-                ray.medium.SampleTmaj(ray, tEnd, rng, lambda,
+                ray.medium.SampleTmaj(ray, tEnd, rng.Uniform<Float>(), rng, lambda,
                                   [&](const MediumSample &mediumSample) {
                                       const SampledSpectrum &Tmaj = mediumSample.Tmaj;
                                       const MediumInteraction &intr = mediumSample.intr;

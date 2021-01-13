@@ -22,6 +22,7 @@
 #include <pbrt/util/rng.h>
 #include <pbrt/util/sampling.h>
 
+#include <functional>
 #include <memory>
 #include <ostream>
 #include <string>
@@ -45,8 +46,6 @@ class Integrator {
 
     virtual std::string ToString() const = 0;
 
-    const Bounds3f &SceneBounds() const { return sceneBounds; }
-
     virtual void Render() = 0;
 
     pstd::optional<ShapeIntersection> Intersect(const Ray &ray,
@@ -61,27 +60,22 @@ class Integrator {
                        const SampledWavelengths &lambda, RNG &rng) const;
 
     // Integrator Public Members
-    std::vector<LightHandle> lights;
     PrimitiveHandle aggregate;
+    std::vector<LightHandle> lights;
     std::vector<LightHandle> infiniteLights;
 
   protected:
     // Integrator Private Methods
     Integrator(PrimitiveHandle aggregate, std::vector<LightHandle> lights)
-        : lights(lights), aggregate(aggregate) {
-        // Integrator Constructor Implementation
-        if (aggregate)
-            sceneBounds = aggregate.Bounds();
-
+        : aggregate(aggregate), lights(lights) {
+        // Integrator constructor implementation
+        Bounds3f sceneBounds = aggregate.Bounds();
         for (auto &light : lights) {
             light.Preprocess(sceneBounds);
             if (light.Type() == LightType::Infinite)
                 infiniteLights.push_back(light);
         }
     }
-
-    // Integrator Private Members
-    Bounds3f sceneBounds;
 };
 
 // ImageTileIntegrator Definition
@@ -94,7 +88,7 @@ class ImageTileIntegrator : public Integrator {
 
     void Render();
 
-    virtual void EvaluatePixelSample(const Point2i &pPixel, int sampleIndex,
+    virtual void EvaluatePixelSample(Point2i pPixel, int sampleIndex,
                                      SamplerHandle sampler,
                                      ScratchBuffer &scratchBuffer) = 0;
 
@@ -112,8 +106,8 @@ class RayIntegrator : public ImageTileIntegrator {
                   std::vector<LightHandle> lights)
         : ImageTileIntegrator(camera, sampler, aggregate, lights) {}
 
-    void EvaluatePixelSample(const Point2i &pPixel, int sampleIndex,
-                             SamplerHandle sampler, ScratchBuffer &scratchBuffer) final;
+    void EvaluatePixelSample(Point2i pPixel, int sampleIndex, SamplerHandle sampler,
+                             ScratchBuffer &scratchBuffer) final;
 
     virtual SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda,
                                SamplerHandle sampler, ScratchBuffer &scratchBuffer,
@@ -127,9 +121,6 @@ class RandomWalkIntegrator : public RayIntegrator {
     RandomWalkIntegrator(int maxDepth, CameraHandle camera, SamplerHandle sampler,
                          PrimitiveHandle aggregate, std::vector<LightHandle> lights)
         : RayIntegrator(camera, sampler, aggregate, lights), maxDepth(maxDepth) {}
-    SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda,
-                       SamplerHandle sampler, ScratchBuffer &scratchBuffer,
-                       VisibleSurface *visibleSurface = nullptr) const;
 
     static std::unique_ptr<RandomWalkIntegrator> Create(
         const ParameterDictionary &parameters, CameraHandle camera, SamplerHandle sampler,
@@ -137,11 +128,56 @@ class RandomWalkIntegrator : public RayIntegrator {
 
     std::string ToString() const;
 
+    SampledSpectrum Li(RayDifferential ray, SampledWavelengths &lambda,
+                       SamplerHandle sampler, ScratchBuffer &scratchBuffer,
+                       VisibleSurface *visibleSurface) const {
+        SampledSpectrum L = LiRandomWalk(ray, lambda, sampler, scratchBuffer, 0);
+        return SafeDiv(L, lambda.PDF());
+    }
+
   private:
     // RandomWalkIntegrator Private Methods
     SampledSpectrum LiRandomWalk(RayDifferential ray, SampledWavelengths &lambda,
                                  SamplerHandle sampler, ScratchBuffer &scratchBuffer,
-                                 int depth) const;
+                                 int depth) const {
+        SampledSpectrum L(0.f);
+        // Intersect ray with scene and return if no intersection
+        pstd::optional<ShapeIntersection> si = Intersect(ray);
+        if (!si) {
+            // Return emitted light from infinite light sources
+            for (LightHandle light : infiniteLights)
+                L += light.Le(ray, lambda);
+            return L;
+        }
+        SurfaceInteraction &isect = si->intr;
+
+        // Get emitted radiance at surface intersection
+        L = isect.Le(-ray.d, lambda);
+
+        // Terminate random walk if maximum depth has been reached
+        if (depth == maxDepth)
+            return L;
+
+        // Compute BSDF at random walk intersection point
+        BSDF bsdf = isect.GetBSDF(ray, lambda, camera, scratchBuffer, sampler);
+        if (!bsdf)
+            return L;
+
+        // Randomly sample direction leaving surface for random walk
+        Point2f u = sampler.Get2D();
+        Vector3f wi = SampleUniformSphere(u);
+
+        // Evaluate BSDF at surface for sampled direction
+        Vector3f wo = -ray.d;
+        SampledSpectrum beta =
+            bsdf.f(wo, wi) * AbsDot(wi, isect.shading.n) / (1 / (4 * Pi));
+        if (!beta)
+            return L;
+
+        // Recursively trace ray to estimate incident radiance at surface
+        ray = isect.SpawnRay(wi);
+        return L + beta * LiRandomWalk(ray, lambda, sampler, scratchBuffer, depth + 1);
+    }
 
     // RandomWalkIntegrator Private Members
     int maxDepth;
@@ -314,8 +350,8 @@ class LightPathIntegrator : public ImageTileIntegrator {
     LightPathIntegrator(int maxDepth, CameraHandle camera, SamplerHandle sampler,
                         PrimitiveHandle aggregate, std::vector<LightHandle> lights);
 
-    void EvaluatePixelSample(const Point2i &pPixel, int sampleIndex,
-                             SamplerHandle sampler, ScratchBuffer &scratchBuffer);
+    void EvaluatePixelSample(Point2i pPixel, int sampleIndex, SamplerHandle sampler,
+                             ScratchBuffer &scratchBuffer);
 
     static std::unique_ptr<LightPathIntegrator> Create(
         const ParameterDictionary &parameters, CameraHandle camera, SamplerHandle sampler,
@@ -464,6 +500,28 @@ class SPPMIntegrator : public Integrator {
     int maxDepth;
     int photonsPerIteration;
     const RGBColorSpace *colorSpace;
+};
+
+// FunctionIntegrator Definition
+class FunctionIntegrator : public Integrator {
+  public:
+    FunctionIntegrator(std::function<Float(Point2f)> func,
+                       const std::string &outputFilename, CameraHandle camera,
+                       SamplerHandle sampler);
+
+    static std::unique_ptr<FunctionIntegrator> Create(
+        const ParameterDictionary &parameters, CameraHandle camera, SamplerHandle sampler,
+        const FileLoc *loc);
+
+    void Render();
+
+    std::string ToString() const;
+
+  private:
+    std::function<Float(Point2f)> func;
+    std::string outputFilename;
+    CameraHandle camera;
+    SamplerHandle baseSampler;
 };
 
 }  // namespace pbrt

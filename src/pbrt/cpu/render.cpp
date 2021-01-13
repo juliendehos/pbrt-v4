@@ -356,6 +356,43 @@ void CPURender(ParsedScene &parsedScene) {
 
     LOG_VERBOSE("Memory used after scene creation: %d", GetCurrentRSS());
 
+    if (Options->pixelMaterial) {
+        SampledWavelengths lambda = SampledWavelengths::SampleUniform(0.5f);
+
+        CameraSample cs;
+        cs.pFilm = *Options->pixelMaterial + Vector2f(0.5f, 0.5f);
+        cs.time = 0.5f;
+        cs.pLens = Point2f(0.5f, 0.5f);
+        cs.weight = 1;
+        pstd::optional<CameraRay> cr = camera.GenerateRay(cs, lambda);
+        if (!cr)
+            ErrorExit("Unable to generate camera ray for specified pixel.");
+
+        pstd::optional<ShapeIntersection> isect = accel.Intersect(cr->ray, Infinity);
+        if (!isect)
+            ErrorExit("No geometry visible at specified pixel.");
+
+        const SurfaceInteraction &intr = isect->intr;
+        if (!intr.material)
+            ErrorExit("No material at intersection point.");
+
+        Transform worldFromRender = camera.GetCameraTransform().WorldFromRender();
+        Printf("World-space p: %s\n", worldFromRender(intr.p()));
+        Printf("World-space n: %s\n", worldFromRender(intr.n));
+        Printf("World-space ns: %s\n", worldFromRender(intr.shading.n));
+
+        for (const auto &mtl : namedMaterials)
+            if (mtl.second == intr.material) {
+                Printf("Named material: %s\n", mtl.first);
+                return;
+            }
+
+        // If we didn't find a named material, dump out the whole thing.
+        Printf("%s\n\n", intr.material.ToString());
+
+        return;
+    }
+
     // Render!
     integrator->Render();
 

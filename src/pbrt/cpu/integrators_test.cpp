@@ -79,7 +79,7 @@ std::vector<TestScene> GetScenes() {
         SpectrumTextureHandle Kd = alloc.new_object<SpectrumConstantTexture>(&cs);
         FloatTextureHandle sigma = alloc.new_object<FloatConstantTexture>(0.);
         // FIXME: here and below, Materials leak...
-        MaterialHandle material = new DiffuseMaterial(Kd, sigma, nullptr);
+        MaterialHandle material = new DiffuseMaterial(Kd, sigma, nullptr, nullptr);
 
         MediumInterface mediumInterface;
         std::vector<PrimitiveHandle> prims;
@@ -106,7 +106,7 @@ std::vector<TestScene> GetScenes() {
         static ConstantSpectrum cs(0.5);
         SpectrumTextureHandle Kd = alloc.new_object<SpectrumConstantTexture>(&cs);
         FloatTextureHandle sigma = alloc.new_object<FloatConstantTexture>(0.);
-        const MaterialHandle material = new DiffuseMaterial(Kd, sigma, nullptr);
+        const MaterialHandle material = new DiffuseMaterial(Kd, sigma, nullptr, nullptr);
 
         MediumInterface mediumInterface;
         std::vector<PrimitiveHandle> prims;
@@ -136,7 +136,7 @@ std::vector<TestScene> GetScenes() {
         static ConstantSpectrum cs(0.5);
         SpectrumTextureHandle Kd = alloc.new_object<SpectrumConstantTexture>(&cs);
         FloatTextureHandle sigma = alloc.new_object<FloatConstantTexture>(0.);
-        const MaterialHandle material = new DiffuseMaterial(Kd, sigma, nullptr);
+        const MaterialHandle material = new DiffuseMaterial(Kd, sigma, nullptr, nullptr);
 
         // We have to do this little dance here to make sure the spectrum is
         // properly normalized (this is usually all handled inside *Light::Create())
@@ -245,13 +245,15 @@ std::vector<std::pair<SamplerHandle, std::string>> GetSamplers(
     std::vector<std::pair<SamplerHandle, std::string>> samplers;
 
     samplers.push_back(std::make_pair(new HaltonSampler(256, resolution), "Halton 256"));
-    samplers.push_back(std::make_pair(new PaddedSobolSampler(256, RandomizeStrategy::XOR),
+    samplers.push_back(std::make_pair(new PaddedSobolSampler(256, RandomizeStrategy::PermuteDigits),
                                       "Padded Sobol 256"));
+    samplers.push_back(std::make_pair(new ZSobolSampler(256, Point2i(16, 16), RandomizeStrategy::PermuteDigits),
+                                      "Z Sobol 256"));
     samplers.push_back(
         std::make_pair(new SobolSampler(256, resolution, RandomizeStrategy::None),
                        "Sobol 256 Not Randomized"));
     samplers.push_back(
-        std::make_pair(new SobolSampler(256, resolution, RandomizeStrategy::XOR),
+        std::make_pair(new SobolSampler(256, resolution, RandomizeStrategy::PermuteDigits),
                        "Sobol 256 XOR Scramble"));
     samplers.push_back(
         std::make_pair(new SobolSampler(256, resolution, RandomizeStrategy::Owen),

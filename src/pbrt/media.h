@@ -28,6 +28,7 @@
 #include <nanovdb/util/CudaDeviceBuffer.h>
 #endif  // PBRT_BUILD_GPU_RENDERER
 
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -97,11 +98,13 @@ class HomogeneousMedium {
     bool IsEmissive() const { return Le_spec.MaxValue() > 0; }
 
     template <typename F>
-    PBRT_CPU_GPU SampledSpectrum SampleTmaj(Ray ray, Float tMax, RNG &rng,
+    PBRT_CPU_GPU SampledSpectrum SampleTmaj(Ray ray, Float tMax, Float u, RNG &rng,
                                             const SampledWavelengths &lambda,
                                             F callback) const {
         // Normalize ray direction for homogeneous medium sampling
         tMax *= Length(ray.d);
+        if (std::isinf(tMax))
+            tMax = std::numeric_limits<Float>::max();
         ray.d = Normalize(ray.d);
 
         // Compute _SampledSpectrum_ scattering properties for medium
@@ -113,7 +116,6 @@ class HomogeneousMedium {
         // Sample exponential function to find _t_ for scattering event
         if (sigma_maj[0] == 0)
             return FastExp(-tMax * sigma_maj);
-        Float u = rng.Uniform<Float>();
         Float t = SampleExponential(u, sigma_maj[0]);
 
         if (t < tMax) {
@@ -169,7 +171,7 @@ class CuboidMedium {
     bool IsEmissive() const { return provider->IsEmissive(); }
 
     template <typename F>
-    PBRT_CPU_GPU SampledSpectrum SampleTmaj(Ray rRender, Float raytMax, RNG &rng,
+    PBRT_CPU_GPU SampledSpectrum SampleTmaj(Ray rRender, Float raytMax, Float u, RNG &rng,
                                             const SampledWavelengths &lambda,
                                             F callback) const {
         SampledSpectrum TmajAccum(1.f);
@@ -246,8 +248,8 @@ class CuboidMedium {
                 while (true) {
                     // Sample medium in current voxel
                     // Sample _t_ for scattering event and check validity
-                    Float u = rng.Uniform<Float>();
                     Float t = t0 + SampleExponential(u, sigma_maj[0]);
+                    u = rng.Uniform<Float>();
                     if (t >= t1) {
                         TmajAccum *= FastExp(-sigma_maj * (t1 - t0));
                         break;
@@ -380,9 +382,9 @@ class UniformGridMediumProvider {
         // Define _getMaxDensity_ lambda
         auto getMaxDensity = [&](const Bounds3f &bounds) -> Float {
             if (densityGrid)
-                return densityGrid->MaximumValue(bounds);
+                return densityGrid->MaxValue(bounds);
             else
-                return rgbDensityGrid->MaximumValue(
+                return rgbDensityGrid->MaxValue(
                     bounds,
                     [] PBRT_CPU_GPU(RGBUnboundedSpectrum s) { return s.MaxValue(); });
         };
@@ -699,10 +701,10 @@ inline Float PhaseFunctionHandle::PDF(Vector3f wo, Vector3f wi) const {
 }
 
 template <typename F>
-SampledSpectrum MediumHandle::SampleTmaj(Ray ray, Float tMax, RNG &rng,
+SampledSpectrum MediumHandle::SampleTmaj(Ray ray, Float tMax, Float u, RNG &rng,
                                          const SampledWavelengths &lambda, F func) const {
     auto sampletn = [&](auto ptr) {
-        return ptr->SampleTmaj(ray, tMax, rng, lambda, func);
+        return ptr->SampleTmaj(ray, tMax, u, rng, lambda, func);
     };
     return Dispatch(sampletn);
 }

@@ -197,8 +197,9 @@ class DielectricInterfaceBxDF {
     // DielectricInterfaceBxDF Public Methods
     DielectricInterfaceBxDF() = default;
     PBRT_CPU_GPU
-    DielectricInterfaceBxDF(Float eta, const TrowbridgeReitzDistribution &mfDistrib)
-        : eta(eta == 1 ? 1.001 : eta), mfDistrib(mfDistrib) {}
+    DielectricInterfaceBxDF(Float eta, SampledSpectrum tint,
+                            const TrowbridgeReitzDistribution &mfDistrib)
+        : eta(eta == 1 ? 1.001 : eta), tint(tint), mfDistrib(mfDistrib) {}
 
     PBRT_CPU_GPU
     BxDFFlags Flags() const {
@@ -229,6 +230,7 @@ class DielectricInterfaceBxDF {
   private:
     // DielectricInterfaceBxDF Private Members
     Float eta;
+    SampledSpectrum tint;
     TrowbridgeReitzDistribution mfDistrib;
 };
 
@@ -266,7 +268,7 @@ class ThinDielectricBxDF {
             return {};
 
         if (uc < pr / (pr + pt)) {
-            // Sample perfect specular reflection at interface
+            // Sample perfect specular reflection at thin dielectric interface
             Vector3f wi(-wo.x, -wo.y, wo.z);
             SampledSpectrum fr(R / AbsCosTheta(wi));
             return BSDFSample(fr, wi, pr / (pr + pt), BxDFFlags::SpecularReflection);
@@ -959,7 +961,7 @@ class CoatedConductorBxDF : public LayeredBxDF<DielectricInterfaceBxDF, Conducto
 // HairBxDF Definition
 class HairBxDF {
   public:
-    // HairBSDF Public Methods
+    // HairBxDF Public Methods
     HairBxDF() = default;
     PBRT_CPU_GPU
     HairBxDF(Float h, Float eta, const SampledSpectrum &sigma_a, Float beta_m,
@@ -991,10 +993,10 @@ class HairBxDF {
                                                  const SampledWavelengths &lambda);
 
   private:
-    // HairBSDF Constants
+    // HairBxDF Constants
     static constexpr int pMax = 3;
 
-    // HairBSDF Private Methods
+    // HairBxDF Private Methods
     PBRT_CPU_GPU
     static Float Mp(Float cosTheta_i, Float cosTheta_o, Float sinTheta_i,
                     Float sinTheta_o, Float v) {
@@ -1051,7 +1053,7 @@ class HairBxDF {
     PBRT_CPU_GPU
     pstd::array<Float, pMax + 1> ComputeApPDF(Float cosThetaO) const;
 
-    // HairBSDF Private Members
+    // HairBxDF Private Members
     Float h, gamma_o, eta;
     SampledSpectrum sigma_a;
     Float beta_m, beta_n;

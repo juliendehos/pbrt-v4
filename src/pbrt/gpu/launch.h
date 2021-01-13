@@ -47,6 +47,7 @@ inline int GetBlockSize(const char *description, F kernel) {
     return blockSize;
 }
 
+#ifdef __CUDACC__
 template <typename F>
 __global__ void Kernel(F func, int nItems) {
     int tid = blockIdx.x * blockDim.x + threadIdx.x;
@@ -55,6 +56,7 @@ __global__ void Kernel(F func, int nItems) {
 
     func(tid);
 }
+#endif  // __CUDACC__
 
 // GPU Launch Function Declarations
 template <typename F>
@@ -67,6 +69,7 @@ void GPUDo(const char *description, F func) {
 
 void GPUWait();
 
+#ifdef __CUDACC__
 template <typename F>
 void GPUParallelFor(const char *description, int nItems, F func) {
 #ifdef NVTX
@@ -77,7 +80,7 @@ void GPUParallelFor(const char *description, int nItems, F func) {
     int blockSize = GetBlockSize(description, kernel);
     std::pair<cudaEvent_t, cudaEvent_t> events = GetProfilerEvents(description);
 
-#ifndef NDEBUG
+#ifdef PBRT_DEBUG_BUILD
     LOG_VERBOSE("Launching %s", description);
 #endif
     cudaEventRecord(events.first);
@@ -85,7 +88,7 @@ void GPUParallelFor(const char *description, int nItems, F func) {
     kernel<<<gridSize, blockSize>>>(func, nItems);
     cudaEventRecord(events.second);
 
-#ifndef NDEBUG
+#ifdef PBRT_DEBUG_BUILD
     CUDA_CHECK(cudaDeviceSynchronize());
     LOG_VERBOSE("Post-sync %s", description);
 #endif
@@ -93,6 +96,7 @@ void GPUParallelFor(const char *description, int nItems, F func) {
     nvtxRangePop();
 #endif
 }
+#endif  // __CUDACC__
 
 void ReportKernelStats();
 

@@ -20,6 +20,7 @@
 #include <pbrt/util/check.h>
 #include <pbrt/util/color.h>
 #include <pbrt/util/colorspace.h>
+#include <pbrt/util/containers.h>
 #include <pbrt/util/display.h>
 #include <pbrt/util/error.h>
 #include <pbrt/util/file.h>
@@ -53,57 +54,6 @@ std::unique_ptr<RandomWalkIntegrator> RandomWalkIntegrator::Create(
 
 std::string RandomWalkIntegrator::ToString() const {
     return StringPrintf("[ RandomWalkIntegrator maxDepth: %d ]", maxDepth);
-}
-
-SampledSpectrum RandomWalkIntegrator::Li(RayDifferential ray, SampledWavelengths &lambda,
-                                         SamplerHandle sampler,
-                                         ScratchBuffer &scratchBuffer,
-                                         VisibleSurface *visibleSurface) const {
-    SampledSpectrum L = LiRandomWalk(ray, lambda, sampler, scratchBuffer, 0);
-    return SafeDiv(L, lambda.PDF());
-}
-
-SampledSpectrum RandomWalkIntegrator::LiRandomWalk(RayDifferential ray,
-                                                   SampledWavelengths &lambda,
-                                                   SamplerHandle sampler,
-                                                   ScratchBuffer &scratchBuffer,
-                                                   int depth) const {
-    SampledSpectrum L(0.f);
-    // Intersect ray with scene and return if no intersection
-    pstd::optional<ShapeIntersection> si = Intersect(ray);
-    if (!si) {
-        // Return emitted light from infinite light sources
-        for (LightHandle light : infiniteLights)
-            L += light.Le(ray, lambda);
-        return L;
-    }
-    SurfaceInteraction &isect = si->intr;
-
-    // Get emitted radiance at surface intersection
-    L = isect.Le(-ray.d, lambda);
-
-    // Terminate random walk if maximum depth has been reached
-    if (depth == maxDepth)
-        return L;
-
-    // Compute BSDF at random walk intersection point
-    BSDF bsdf = isect.GetBSDF(ray, lambda, camera, scratchBuffer, sampler);
-    if (!bsdf)
-        return L;
-
-    // Randomly sample direction leaving surface for random walk
-    Point2f u = sampler.Get2D();
-    Vector3f wi = SampleUniformSphere(u);
-
-    // Evaluate BSDF at surface for sampled direction
-    Vector3f wo = -ray.d;
-    SampledSpectrum beta = bsdf.f(wo, wi) * AbsDot(wi, isect.shading.n) / (1 / (4 * Pi));
-    if (!beta)
-        return L;
-
-    // Recursively trace ray to estimate incident radiance at surface
-    ray = isect.SpawnRay(wi);
-    return L + beta * LiRandomWalk(ray, lambda, sampler, scratchBuffer, depth + 1);
 }
 
 // Integrator Method Definitions
@@ -159,7 +109,7 @@ void ImageTileIntegrator::Render() {
     if (Options->recordPixelStatistics)
         StatsEnablePixelStats(pixelBounds,
                               RemoveExtension(camera.GetFilm().GetFilename()));
-    // Handle MSE referene image, if provided
+    // Handle MSE reference image, if provided
     pstd::optional<Image> referenceImage;
     FILE *mseOutFile = nullptr;
     if (!Options->mseReferenceImage.empty()) {
@@ -240,68 +190,72 @@ void ImageTileIntegrator::Render() {
         waveEnd = std::min(spp, waveEnd + nextWaveSize);
         if (!referenceImage)
             nextWaveSize = std::min(2 * nextWaveSize, 64);
+        if (waveStart == spp)
+            progress.Done();
 
-        // Write current image to disk
-        LOG_VERBOSE("Writing image with spp = %d", waveStart);
-        ImageMetadata metadata;
-        metadata.renderTimeSeconds = progress.ElapsedSeconds();
-        metadata.samplesPerPixel = waveStart;
-        if (referenceImage) {
-            ImageMetadata filmMetadata;
-            Image filmImage = camera.GetFilm().GetImage(&filmMetadata, 1.f / waveStart);
-            ImageChannelValues mse =
-                filmImage.MSE(filmImage.AllChannelsDesc(), *referenceImage);
-            fprintf(mseOutFile, "%d, %.9g\n", waveStart, mse.Average());
-            metadata.MSE = mse.Average();
-            fflush(mseOutFile);
+        // Optionally write current image to disk
+        if (waveStart == spp || Options->writePartialImages || referenceImage) {
+            LOG_VERBOSE("Writing image with spp = %d", waveStart);
+            ImageMetadata metadata;
+            metadata.renderTimeSeconds = progress.ElapsedSeconds();
+            metadata.samplesPerPixel = waveStart;
+            if (referenceImage) {
+                ImageMetadata filmMetadata;
+                Image filmImage =
+                    camera.GetFilm().GetImage(&filmMetadata, 1.f / waveStart);
+                ImageChannelValues mse =
+                    filmImage.MSE(filmImage.AllChannelsDesc(), *referenceImage);
+                fprintf(mseOutFile, "%d, %.9g\n", waveStart, mse.Average());
+                metadata.MSE = mse.Average();
+                fflush(mseOutFile);
+            }
+            if (waveStart == spp || Options->writePartialImages) {
+                camera.InitMetadata(&metadata);
+                camera.GetFilm().WriteImage(metadata, 1.0f / waveStart);
+            }
         }
-        camera.InitMetadata(&metadata);
-        camera.GetFilm().WriteImage(metadata, 1.0f / waveStart);
     }
 
     if (mseOutFile)
         fclose(mseOutFile);
-    progress.Done();
     DisconnectFromDisplayServer();
     LOG_VERBOSE("Rendering finished");
 }
 
 // RayIntegrator Method Definitions
-void RayIntegrator::EvaluatePixelSample(const Point2i &pPixel, int sampleIndex,
+void RayIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex,
                                         SamplerHandle sampler,
                                         ScratchBuffer &scratchBuffer) {
-    // Initialize _CameraSample_ for current sample
-    FilterHandle filter = camera.GetFilm().GetFilter();
-    CameraSample cameraSample = GetCameraSample(sampler, pPixel, filter);
-
     // Sample wavelengths for the ray
-    Float lu = RadicalInverse(1, sampleIndex) + BlueNoise(47, pPixel);
-    if (lu >= 1)
-        lu -= 1;
+    Float lu = sampler.Get1D();
     if (Options->disableWavelengthJitter)
         lu = 0.5;
     SampledWavelengths lambda = camera.GetFilm().SampleWavelengths(lu);
+
+    // Initialize _CameraSample_ for current sample
+    FilterHandle filter = camera.GetFilm().GetFilter();
+    CameraSample cameraSample = GetCameraSample(sampler, pPixel, filter);
 
     // Generate camera ray for current sample
     pstd::optional<CameraRayDifferential> cameraRay =
         camera.GenerateRayDifferential(cameraSample, lambda);
 
+    // Trace _cameraRay_ if valid
     SampledSpectrum L(0.);
     VisibleSurface visibleSurface;
-    bool initializeVisibleSurface = camera.GetFilm().UsesVisibleSurface();
-    // Trace _cameraRay_ if valid
     if (cameraRay) {
         // Double check that the ray's direction is normalized.
         DCHECK_GT(Length(cameraRay->ray.d), .999f);
         DCHECK_LT(Length(cameraRay->ray.d), 1.001f);
         // Scale camera ray differentials based on sampling rate
         Float rayDiffScale =
-            std::max<Float>(.125, 1 / std::sqrt((Float)sampler.SamplesPerPixel()));
+            std::max<Float>(.125f, 1 / std::sqrt((Float)sampler.SamplesPerPixel()));
         if (!Options->disablePixelJitter)
             cameraRay->ray.ScaleDifferentials(rayDiffScale);
 
         ++nCameraRays;
         // Evaluate radiance along camera ray
+        bool initializeVisibleSurface = camera.GetFilm().UsesVisibleSurface();
         L = cameraRay->weight * Li(cameraRay->ray, lambda, sampler, scratchBuffer,
                                    initializeVisibleSurface ? &visibleSurface : nullptr);
 
@@ -386,7 +340,7 @@ SampledSpectrum Integrator::Tr(const Interaction &p0, const Interaction &p1,
             Point3f pExit = ray(si ? si->tHit : (1 - ShadowEpsilon));
             ray.d = pExit - ray.o;
 
-            ray.medium.SampleTmaj(ray, 1.f, rng, lambda,
+            ray.medium.SampleTmaj(ray, 1.f, rng.Uniform<Float>(), rng, lambda,
                                   [&](const MediumSample &ms) -> bool {
                                       const SampledSpectrum &Tmaj = ms.Tmaj;
 
@@ -415,8 +369,8 @@ SampledSpectrum Integrator::Tr(const Interaction &p0, const Interaction &p1,
 }
 
 std::string Integrator::ToString() const {
-    std::string s = StringPrintf("[ Scene aggregate: %s sceneBounds: %s lights[%d]: [ ",
-                                 aggregate, sceneBounds, lights.size());
+    std::string s = StringPrintf("[ Integrator aggregate: %s lights[%d]: [ ", aggregate,
+                                 lights.size());
     for (const auto &l : lights)
         s += StringPrintf("%s, ", l.ToString());
     s += StringPrintf("] infiniteLights[%d]: [ ", infiniteLights.size());
@@ -557,16 +511,11 @@ LightPathIntegrator::LightPathIntegrator(int maxDepth, CameraHandle camera,
     lightSampler = std::make_unique<PowerLightSampler>(lights, Allocator());
 }
 
-void LightPathIntegrator::EvaluatePixelSample(const Point2i &pPixel, int sampleIndex,
+void LightPathIntegrator::EvaluatePixelSample(Point2i pPixel, int sampleIndex,
                                               SamplerHandle sampler,
                                               ScratchBuffer &scratchBuffer) {
-    // Consume first two dimensions from sampler
-    (void)sampler.Get2D();
-
     // Sample wavelengths for the ray
-    Float lu = RadicalInverse(1, sampleIndex) + BlueNoise(47, pPixel);
-    if (lu >= 1)
-        lu -= 1;
+    Float lu = sampler.Get1D();
     if (Options->disableWavelengthJitter)
         lu = 0.5;
     SampledWavelengths lambda = camera.GetFilm().SampleWavelengths(lu);
@@ -901,7 +850,9 @@ SampledSpectrum SimpleVolPathIntegrator::Li(RayDifferential ray,
             uint64_t hash1 = Hash(sampler.Get1D());
             RNG rng(hash0, hash1);
             Float tMax = si ? si->tHit : Infinity;
-            ray.medium.SampleTmaj(ray, tMax, rng, lambda, [&](const MediumSample &ms) {
+            Float u = sampler.Get1D();
+            Float uMode = sampler.Get1D();
+            ray.medium.SampleTmaj(ray, tMax, u, rng, lambda, [&](const MediumSample &ms) {
                 const MediumInteraction &intr = ms.intr;
                 // Compute medium event probabilities for interaction
                 Float pAbsorb = intr.sigma_a[0] / intr.sigma_maj[0];
@@ -909,7 +860,7 @@ SampledSpectrum SimpleVolPathIntegrator::Li(RayDifferential ray,
                 Float pNull = std::max<Float>(0, 1 - pAbsorb - pScatter);
 
                 // Randomly sample medium scattering event for delta tracking
-                int mode = SampleDiscrete({pAbsorb, pScatter, pNull}, sampler.Get1D());
+                int mode = SampleDiscrete({pAbsorb, pScatter, pNull}, uMode);
                 if (mode == 0) {
                     // Handle absorption event for delta tracking
                     L += SafeDiv(beta * intr.Le, lambda.PDF());
@@ -940,6 +891,7 @@ SampledSpectrum SimpleVolPathIntegrator::Li(RayDifferential ray,
 
                 } else {
                     // Handle null scattering event for delta tracking
+                    uMode = rng.Uniform<Float>();
                     return true;
                 }
             });
@@ -1017,7 +969,8 @@ SampledSpectrum VolPathIntegrator::Li(RayDifferential ray, SampledWavelengths &l
             uint64_t hash1 = Hash(sampler.Get1D());
             RNG rng(hash0, hash1);
             SampledSpectrum Tmaj = ray.medium.SampleTmaj(
-                ray, tMax, rng, lambda, [&](const MediumSample &mediumSample) {
+                ray, tMax, sampler.Get1D(), rng, lambda,
+                [&](const MediumSample &mediumSample) {
                     // Handle medium scattering event for ray
                     if (!T_hat) {
                         terminated = true;
@@ -1377,7 +1330,8 @@ SampledSpectrum VolPathIntegrator::SampleLd(const Interaction &intr, const BSDF 
         if (lightRay.medium != nullptr) {
             Float tMax = si ? si->tHit : (1 - ShadowEpsilon);
             SampledSpectrum Tmaj = lightRay.medium.SampleTmaj(
-                lightRay, tMax, rng, lambda, [&](const MediumSample &mediumSample) {
+                lightRay, tMax, rng.Uniform<Float>(), rng, lambda,
+                [&](const MediumSample &mediumSample) {
                     // Update ray transmittance estimate at sampled point
                     // Update _T_ray_ and PDFs using ratio-tracking estimator
                     const MediumInteraction &intr = mediumSample.intr;
@@ -1823,9 +1777,10 @@ struct Vertex {
         Float pdf;
         if (IsInfiniteLight()) {
             // Compute planar sampling density for infinite light sources
+            Bounds3f sceneBounds = integrator.aggregate.Bounds();
             Point3f worldCenter;
             Float worldRadius;
-            integrator.SceneBounds().BoundingSphere(&worldCenter, &worldRadius);
+            sceneBounds.BoundingSphere(&worldCenter, &worldRadius);
             pdf = 1 / (Pi * Sqr(worldRadius));
 
         } else if (IsOnSurface()) {
@@ -2025,8 +1980,9 @@ int RandomWalk(const Integrator &integrator, SampledWavelengths &lambda,
             // Sample participating medium for _RandomWalk()_ ray
             Float tMax = si ? si->tHit : Infinity;
             RNG rng(Hash(ray.d.x), Hash(ray.d.y));
+            Float u = sampler.Get1D();
             SampledSpectrum Tmaj = ray.medium.SampleTmaj(
-                ray, tMax, rng, lambda, [&](const MediumSample &ms) {
+                ray, tMax, u, rng, lambda, [&](const MediumSample &ms) {
                     const MediumInteraction &intr = ms.intr;
                     // Compute medium event probabilities for interaction
                     Float pAbsorb = intr.sigma_a[0] / intr.sigma_maj[0];
@@ -3356,6 +3312,216 @@ std::unique_ptr<SPPMIntegrator> SPPMIntegrator::Create(
                                             colorSpace);
 }
 
+// FunctionIntegrator Method Definitions
+FunctionIntegrator::FunctionIntegrator(std::function<Float(Point2f)> func,
+                                       const std::string &outputFilename,
+                                       CameraHandle camera, SamplerHandle sampler)
+    : Integrator(nullptr, {}),
+      func(func),
+      outputFilename(outputFilename),
+      camera(camera),
+      baseSampler(sampler) {}
+
+namespace funcs {
+
+static Float step(Point2f p) {
+    return (p.x < 0.5) ? 2 : 0;
+}
+static Float diagonal(Point2f p) {
+    return (p.x + p.y < 1) ? 2 : 0;
+}
+static Float disk(Point2f p) {
+    return Distance(p, Point2f(0.5, 0.5)) < 0.5 ? (1 / (Pi * Sqr(0.5))) : 0;
+}
+static Float checkerboard(Point2f p) {
+    int freq = 10;
+    Point2i pi(p * freq);
+    return ((pi.x & 1) ^ (pi.y & 1)) ? 2 : 0;
+}
+static Float rotatedCheckerboard(Point2f p) {
+    Float angle = Radians(45);
+    Float nrm = 1.0169844966464572;
+    return checkerboard({p.x * std::cos(angle) - p.y * std::sin(angle),
+                         p.x * std::sin(angle) + p.y * std::cos(angle)}) /
+           nrm;
+}
+static Float gaussian(Point2f p) {
+    Float mu = 0.5, sigma = 0.5;
+    Float nrm = Sqr(GaussianIntegral(0, 1, mu, sigma));
+    return Gaussian(p.x, mu, sigma) * Gaussian(p.y, mu, sigma) / nrm;
+}
+
+}  // namespace funcs
+
+std::unique_ptr<FunctionIntegrator> FunctionIntegrator::Create(
+    const ParameterDictionary &parameters, CameraHandle camera, SamplerHandle sampler,
+    const FileLoc *loc) {
+    std::string funcName = parameters.GetOneString("function", "step");
+    std::string defaultOut = Options->imageFile.empty()
+                                 ? StringPrintf("%s-mse.txt", funcName)
+                                 : Options->imageFile;
+    std::string outputFilename = parameters.GetOneString("filename", defaultOut);
+
+    std::function<Float(Point2f)> func;
+    if (funcName == "step")
+        func = funcs::step;
+    else if (funcName == "diagonal")
+        func = funcs::diagonal;
+    else if (funcName == "disk")
+        func = funcs::disk;
+    else if (funcName == "checkerboard")
+        func = funcs::checkerboard;
+    else if (funcName == "rotatedcheckerboard")
+        func = funcs::rotatedCheckerboard;
+    else if (funcName == "gaussian")
+        func = funcs::gaussian;
+
+    if (!func)
+        ErrorExit(loc, "%s: function for FunctionIntegrator unknown", funcName);
+
+    if (sampler.Is<SobolSampler>())
+        ErrorExit(loc, "\"sobol\" sampler should be replaced with \"paddedsobol\" for "
+                       "the \"function\" integrator.");
+
+    return std::make_unique<FunctionIntegrator>(func, outputFilename, camera, sampler);
+}
+
+void FunctionIntegrator::Render() {
+    std::string result;
+    Bounds2i pixelBounds = camera.GetFilm().PixelBounds();
+    int nPixels = pixelBounds.Area();
+    Array2D<double> sumv(pixelBounds);
+    int nSamples = baseSampler.SamplesPerPixel();
+    ProgressReporter prog(nSamples, "Sampling", Options->quiet);
+    Float firstMSE = 0;
+
+    bool isHalton = baseSampler.Is<HaltonSampler>();
+    bool isStratified = baseSampler.Is<StratifiedSampler>();
+    std::vector<Float> cpRot[2];
+    std::vector<DigitPermutation> digitPermutations[2];
+    std::vector<uint64_t> owenHash[2];
+    if (isHalton) {
+        RNG rng;
+        for (int d = 0; d < 2; ++d) {
+            cpRot[d].resize(nPixels);
+            for (int i = 0; i < nPixels; ++i)
+                cpRot[d][i] = rng.Uniform<Float>();
+
+            digitPermutations[d].resize(nPixels);
+            for (int i = 0; i < nPixels; ++i)
+                digitPermutations[d][i] =
+                    DigitPermutation(d == 0 ? 2 : 3, rng.Uniform<uint32_t>(), {});
+
+            owenHash[d].resize(nPixels);
+            for (int i = 0; i < nPixels; ++i)
+                owenHash[d][i] = rng.Uniform<uint64_t>();
+        }
+    }
+
+    std::vector<SamplerHandle> threadSamplers = baseSampler.Clone(MaxThreadIndex());
+    for (int sampleIndex = 0; sampleIndex < nSamples; ++sampleIndex) {
+        if (isStratified) {
+            int spp = sampleIndex + 1;
+            int factor = int(std::sqrt(spp));
+            while ((spp % factor) != 0)
+                --factor;
+
+            ParallelFor2D(pixelBounds, [&](Point2i pPixel) {
+                int pixelIndex = (pPixel.x - pixelBounds.pMin.x) +
+                                 (pPixel.y - pixelBounds.pMin.y) *
+                                     (pixelBounds.pMax.x - pixelBounds.pMin.x);
+                RNG rng(pixelIndex, MixBits(sampleIndex + 1));
+
+                Float v = 0;
+                int nx = factor, ny = spp / factor;
+                for (int x = 0; x < nx; ++x) {
+                    for (int y = 0; y < ny; ++y) {
+                        Point2f u{(x + rng.Uniform<Float>()) / nx,
+                                  (y + rng.Uniform<Float>()) / ny};
+                        v += func(u);
+                    }
+                }
+                // Need spp factor to cancel out division in sumSE computation.
+                sumv[pPixel] = v * spp / (nx * ny);
+            });
+        } else {
+            ParallelFor2D(pixelBounds, [&](Point2i pPixel) {
+                SamplerHandle &sampler = threadSamplers[ThreadIndex];
+                sampler.StartPixelSample(pPixel, sampleIndex, 0);
+
+                Point2f u;
+                if (isHalton) {
+                    int pixelIndex = (pPixel.x - pixelBounds.pMin.x) +
+                                     (pPixel.y - pixelBounds.pMin.y) *
+                                         (pixelBounds.pMax.x - pixelBounds.pMin.x);
+                    CHECK_GE(pixelIndex, 0);
+                    CHECK_LT(pixelIndex, nPixels);
+
+                    switch (baseSampler.Cast<HaltonSampler>()->GetRandomizeStrategy()) {
+                    case RandomizeStrategy::None:
+                        u = Point2f(RadicalInverse(0, sampleIndex),
+                                    RadicalInverse(1, sampleIndex));
+                        break;
+                    case RandomizeStrategy::CranleyPatterson:
+                        u = Point2f(RadicalInverse(0, sampleIndex),
+                                    RadicalInverse(1, sampleIndex)) +
+                            Vector2f(cpRot[0][pixelIndex], cpRot[1][pixelIndex]);
+                        if (u.x >= 1)
+                            u.x -= 1;
+                        if (u.y >= 1)
+                            u.y -= 1;
+                        break;
+                    case RandomizeStrategy::PermuteDigits:
+                        u = Point2f(
+                            ScrambledRadicalInverse(0, sampleIndex,
+                                                    digitPermutations[0][pixelIndex]),
+                            ScrambledRadicalInverse(1, sampleIndex,
+                                                    digitPermutations[1][pixelIndex]));
+                        break;
+                    case RandomizeStrategy::Owen:
+                        u = Point2f(OwenScrambledRadicalInverse(0, sampleIndex,
+                                                                owenHash[0][pixelIndex]),
+                                    OwenScrambledRadicalInverse(1, sampleIndex,
+                                                                owenHash[1][pixelIndex]));
+                        break;
+                    default:
+                        LOG_FATAL("Unhandled randomization strategy");
+                    }
+                } else
+                    u = sampler.Get2D();
+                sumv[pPixel] += func(u);
+            });
+        }
+
+        // Compute average MSE/variance
+        double sumSE = 0;
+        for (double v : sumv)
+            sumSE += Sqr(v / (sampleIndex + 1) - 1);
+        Float mse = sumSE / nPixels;
+
+        if (sampleIndex == 0)
+            firstMSE = mse;
+        result += StringPrintf("%d %f %f\n", sampleIndex + 1, mse, firstMSE / mse);
+        prog.Update();
+    }
+
+    // Make sure that it's basically one...
+    double sum = std::accumulate(sumv.begin(), sumv.end(), 0.);
+    double avg = sum / (double(sumv.size()) * double(nSamples));
+    if (avg < 0.999 || avg > 1.001)
+        Warning("Average estimate is %f, which is suspiciously far from 1.", avg);
+
+    prog.Done();
+
+    WriteFile(outputFilename, result);
+}
+
+std::string FunctionIntegrator::ToString() const {
+    return StringPrintf(
+        "[ FunctionIntegrator outputFilename: %s camera: %s baseSampler: %s ]",
+        outputFilename, camera, baseSampler);
+}
+
 std::unique_ptr<Integrator> Integrator::Create(
     const std::string &name, const ParameterDictionary &parameters, CameraHandle camera,
     SamplerHandle sampler, PrimitiveHandle aggregate, std::vector<LightHandle> lights,
@@ -3364,6 +3530,8 @@ std::unique_ptr<Integrator> Integrator::Create(
     if (name == "path")
         integrator =
             PathIntegrator::Create(parameters, camera, sampler, aggregate, lights, loc);
+    else if (name == "function")
+        integrator = FunctionIntegrator::Create(parameters, camera, sampler, loc);
     else if (name == "simplepath")
         integrator = SimplePathIntegrator::Create(parameters, camera, sampler, aggregate,
                                                   lights, loc);

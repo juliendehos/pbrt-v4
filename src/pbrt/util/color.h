@@ -18,6 +18,11 @@
 #include <memory>
 #include <string>
 
+// A special present from windgi.h on Windows...
+#ifdef RGB
+#undef RGB
+#endif  // RGB
+
 namespace pbrt {
 
 // RGB Definition
@@ -404,10 +409,12 @@ class ColorEncodingHandle
 
     std::string ToString() const;
 
-    static const ColorEncodingHandle Get(const std::string &name);
+    static const ColorEncodingHandle Get(const std::string &name, Allocator alloc);
 
-    static const ColorEncodingHandle Linear;
-    static const ColorEncodingHandle sRGB;
+    static ColorEncodingHandle Linear;
+    static ColorEncodingHandle sRGB;
+
+    static void Init(Allocator alloc);
 };
 
 class LinearColorEncoding {

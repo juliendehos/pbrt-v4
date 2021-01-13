@@ -23,6 +23,7 @@ struct BasicPBRTOptions {
     bool quiet = false;
     bool disablePixelJitter = false, disableWavelengthJitter = false;
     bool forceDiffuse = false;
+    bool useGPU = false;
     RenderingCoordinateSystem renderingSpace = RenderingCoordinateSystem::CameraWorld;
 };
 
@@ -30,7 +31,7 @@ struct BasicPBRTOptions {
 struct PBRTOptions : BasicPBRTOptions {
     int nThreads = 0;
     LogLevel logLevel = LogLevel::Error;
-    bool useGPU = false;
+    bool writePartialImages = false;
     bool recordPixelStatistics = false;
     pstd::optional<int> pixelSamples;
     pstd::optional<int> gpuDevice;
@@ -42,6 +43,7 @@ struct PBRTOptions : BasicPBRTOptions {
     std::string displayServer;
     pstd::optional<Bounds2f> cropWindow;
     pstd::optional<Bounds2i> pixelBounds;
+    pstd::optional<Point2i> pixelMaterial;
 
     std::string ToString() const;
 };

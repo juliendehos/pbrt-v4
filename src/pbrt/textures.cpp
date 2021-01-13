@@ -345,7 +345,7 @@ SampledSpectrum SpectrumImageTexture::Evaluate(TextureEvalContext ctx,
 
     // Lookup filtered RGB value in _MIPMap_
     RGB rgb = scale * mipmap->Filter<RGB>(st, dstdx, dstdy);
-    rgb = ClampZero(rgb);
+    rgb = ClampZero(invert ? (RGB(1, 1, 1) - rgb) : rgb);
 
     // Return _SampledSpectrum_ for RGB image texture value
     if (const RGBColorSpace *cs = mipmap->GetRGBColorSpace(); cs != nullptr) {
@@ -364,13 +364,15 @@ SampledSpectrum SpectrumImageTexture::Evaluate(TextureEvalContext ctx,
 }
 
 std::string SpectrumImageTexture::ToString() const {
-    return StringPrintf("[ SpectrumImageTexture mapping: %s scale: %f mipmap: %s ]",
-                        mapping, scale, *mipmap);
+    return StringPrintf(
+        "[ SpectrumImageTexture mapping: %s scale: %f invert: %s mipmap: %s ]", mapping,
+        scale, invert, *mipmap);
 }
 
 std::string FloatImageTexture::ToString() const {
-    return StringPrintf("[ FloatImageTexture mapping: %s scale: %f mipmap: %s ]", mapping,
-                        scale, *mipmap);
+    return StringPrintf(
+        "[ FloatImageTexture mapping: %s scale: %f invert: %s mipmap: %s ]", mapping,
+        scale, invert, *mipmap);
 }
 
 std::string TexInfo::ToString() const {
@@ -405,14 +407,15 @@ FloatImageTexture *FloatImageTexture::Create(const Transform &renderFromTexture,
     if (!wrapMode)
         ErrorExit("%s: wrap mode unknown", wrapString);
     Float scale = parameters.GetOneFloat("scale", 1.f);
+    bool invert = parameters.GetOneBool("invert", false);
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
 
     const char *defaultEncoding = HasExtension(filename, "png") ? "sRGB" : "linear";
     std::string encodingString = parameters.GetOneString("encoding", defaultEncoding);
-    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString);
+    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString, alloc);
 
     return alloc.new_object<FloatImageTexture>(map, filename, filterOptions, *wrapMode,
-                                               scale, encoding, alloc);
+                                               scale, invert, encoding, alloc);
 }
 
 SpectrumImageTexture *SpectrumImageTexture::Create(
@@ -438,14 +441,16 @@ SpectrumImageTexture *SpectrumImageTexture::Create(
     if (!wrapMode)
         ErrorExit("%s: wrap mode unknown", wrapString);
     Float scale = parameters.GetOneFloat("scale", 1.f);
+    bool invert = parameters.GetOneBool("invert", false);
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
 
     const char *defaultEncoding = HasExtension(filename, "png") ? "sRGB" : "linear";
     std::string encodingString = parameters.GetOneString("encoding", defaultEncoding);
-    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString);
+    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString, alloc);
 
     return alloc.new_object<SpectrumImageTexture>(map, filename, filterOptions, *wrapMode,
-                                                  scale, encoding, spectrumType, alloc);
+                                                  scale, invert, encoding, spectrumType,
+                                                  alloc);
 }
 
 // MarbleTexture Method Definitions
@@ -668,7 +673,7 @@ FloatPtexTexture *FloatPtexTexture::Create(const Transform &renderFromTexture,
                                            const FileLoc *loc, Allocator alloc) {
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
     std::string encodingString = parameters.GetOneString("encoding", "gamma 2.2");
-    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString);
+    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString, alloc);
     return alloc.new_object<FloatPtexTexture>(filename, encoding);
 }
 
@@ -677,11 +682,11 @@ SpectrumPtexTexture *SpectrumPtexTexture::Create(
     SpectrumType spectrumType, const FileLoc *loc, Allocator alloc) {
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
     std::string encodingString = parameters.GetOneString("encoding", "gamma 2.2");
-    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString);
+    ColorEncodingHandle encoding = ColorEncodingHandle::Get(encodingString, alloc);
     return alloc.new_object<SpectrumPtexTexture>(filename, encoding, spectrumType);
 }
 
-// ScaleTexture Method Definitions
+// ScaledTexture Method Definitions
 std::string FloatScaledTexture::ToString() const {
     return StringPrintf("[ FloatScaledTexture tex: %s scale: %s ]", tex, scale);
 }
@@ -866,7 +871,7 @@ GPUSpectrumImageTexture *GPUSpectrumImageTexture::Create(
       const char *defaultEncoding = HasExtension(filename, "png") ? "sRGB" :
       "linear"; std::string encodingString = parameters.GetOneString("encoding",
       defaultEncoding); const ColorEncoding *encoding =
-      ColorEncodingHandle::Get(encodingString);
+      ColorEncodingHandle::Get(encodingString, alloc);
     */
 
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
@@ -1047,9 +1052,10 @@ GPUSpectrumImageTexture *GPUSpectrumImageTexture::Create(
         TextureMapping2DHandle::Create(parameters, renderFromTexture, loc, alloc);
 
     Float scale = parameters.GetOneFloat("scale", 1.f);
+    bool invert = parameters.GetOneBool("invert", false);
 
     return alloc.new_object<GPUSpectrumImageTexture>(
-        mapping, texObj, scale, isSingleChannel, colorSpace, spectrumType);
+        mapping, texObj, scale, invert, isSingleChannel, colorSpace, spectrumType);
 }
 
 GPUFloatImageTexture *GPUFloatImageTexture::Create(
@@ -1061,7 +1067,7 @@ GPUFloatImageTexture *GPUFloatImageTexture::Create(
       const char *defaultEncoding = HasExtension(filename, "png") ? "sRGB" :
       "linear"; std::string encodingString = parameters.GetOneString("encoding",
       defaultEncoding); const ColorEncoding *encoding =
-      ColorEncodingHandle::Get(encodingString);
+      ColorEncodingHandle::Get(encodingString, alloc);
     */
     std::string filename = ResolveFilename(parameters.GetOneString("filename", ""));
 
@@ -1148,8 +1154,9 @@ GPUFloatImageTexture *GPUFloatImageTexture::Create(
         TextureMapping2DHandle::Create(parameters, renderFromTexture, loc, alloc);
 
     Float scale = parameters.GetOneFloat("scale", 1.f);
+    bool invert = parameters.GetOneBool("invert", false);
 
-    return alloc.new_object<GPUFloatImageTexture>(mapping, texObj, scale);
+    return alloc.new_object<GPUFloatImageTexture>(mapping, texObj, scale, invert);
 }
 
 #endif  // PBRT_BUILD_GPU_RENDERER
